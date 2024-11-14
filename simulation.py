@@ -1,12 +1,13 @@
 # simulation.py
 import numpy as np
-from typing import List
+from typing import List, Dict, Tuple
 from dataclasses import dataclass
 from enum import Enum
 import scipy.signal as signal
 from tqdm import tqdm
 import concurrent.futures
 from collections import deque
+from connection import AdvancedConnection
 
 class NetworkState(Enum):
     RESTING = "resting"
@@ -31,92 +32,15 @@ class SynapticHomeostasis:
         self.time_window = 1000.0  # ms
         self.adaptation_rate = 0.01
         
-    def adjust_weights(self, current_rate: float, connections: List['AdvancedConnection']):
+    def adjust_weights(self, current_rate: float, connections: Dict[Tuple[int, int], AdvancedConnection]):
         """Scale synaptic weights to maintain target firing rate."""
         rate_error = self.target_rate - current_rate
         self.scaling_factor += self.adaptation_rate * rate_error
         self.scaling_factor = np.clip(self.scaling_factor, 0.5, 2.0)
         
-        for conn in connections:
-            conn.weight *= self.scaling_factor
-
-class AdvancedConnection:
-    """Implements biologically detailed synaptic connections."""
-    def __init__(self, source_idx: int, target_idx: int, weight: float, delay: float):
-        self.source_idx = source_idx
-        self.target_idx = target_idx
-        self.weight = weight
-        self.delay = delay
-        
-        # STDP parameters
-        self.A_plus = 0.005
-        self.A_minus = 0.0025
-        self.tau_plus = 20.0
-        self.tau_minus = 40.0
-        
-        # Trace variables for STDP
-        self.pre_trace = 0.0
-        self.post_trace = 0.0
-        
-        # Synaptic state
-        self.vesicle_pool = 1.0
-        self.recovery_tau = 800.0  # ms
-        self.facilitation = 1.0
-        self.facilitation_tau = 100.0  # ms
-        
-        # Structural plasticity
-        self.stability = 1.0
-        self.pruning_threshold = 0.2
-        
-        # Receptor composition
-        self.ampa_ratio = 0.8
-        self.nmda_ratio = 0.2
-        self.nmda_voltage_dependence = True
-        
-    def update_stdp(self, t: float, pre_spike: bool, post_spike: bool, dt: float):
-        """Update STDP traces and weights."""
-        # Decay traces
-        self.pre_trace *= np.exp(-dt / self.tau_plus)
-        self.post_trace *= np.exp(-dt / self.tau_minus)
-        
-        # Update traces and weights on spikes
-        if pre_spike:
-            dw = self.A_plus * self.post_trace
-            self.weight += dw
-            self.pre_trace += 1.0
-            
-        if post_spike:
-            dw = -self.A_minus * self.pre_trace
-            self.weight += dw
-            self.post_trace += 1.0
-            
-        # Weight bounds
-        self.weight = np.clip(self.weight, 0.0, 5.0)
-        
-    def compute_transmission(self, pre_spike: bool, dt: float, post_voltage: float) -> float:
-        """Compute synaptic transmission including short-term plasticity."""
-        if not pre_spike:
-            # Recovery of vesicle pool
-            self.vesicle_pool += dt * (1 - self.vesicle_pool) / self.recovery_tau
-            # Decay of facilitation
-            self.facilitation += dt * (1 - self.facilitation) / self.facilitation_tau
-            return 0.0
-            
-        # Compute release probability
-        P_release = self.facilitation * self.vesicle_pool
-        
-        # Update synaptic resources
-        self.vesicle_pool *= (1 - P_release)
-        self.facilitation += 0.1
-        
-        # Compute synaptic current components
-        ampa_current = self.weight * self.ampa_ratio * P_release
-        
-        # NMDA current with voltage dependence
-        mg_block = 1.0 / (1.0 + np.exp(-0.062 * post_voltage) * (1.0/3.57))
-        nmda_current = self.weight * self.nmda_ratio * P_release * mg_block
-        
-        return ampa_current + nmda_current
+        # Iterate over the values (AdvancedConnection objects) of the connections dictionary
+        for connection in connections.values():
+            connection.weight *= self.scaling_factor
 
 class AdvancedSimulation:
     """Implements biologically detailed neural network simulation."""
@@ -258,7 +182,7 @@ class AdvancedSimulation:
         for source_idx, synapse in neuron.synapses.items():
             # Find presynaptic spikes
             if t_idx > 0 and self.spike_record[t_idx-1, source_idx]:
-                connection = self.brain.get_connection_info(source_idx, neuron.idx)
+                connection = self.brain.get_connection(source_idx, neuron.idx)
                 if connection:
                     # Compute synaptic transmission
                     psp = connection.compute_transmission(True, self.dt, neuron.v)

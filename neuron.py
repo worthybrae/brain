@@ -121,6 +121,41 @@ class IonChannel:
         elif self.type == IonChannelType.CAL:
             return 0.94 * np.exp(-(v + 75) / 17)
         return 0.0
+    
+    def current(self, v: float) -> float:
+        """Calculate ionic current through the channel.
+        
+        Args:
+            v: Membrane potential (mV)
+            
+        Returns:
+            float: Current through the channel (pA)
+        """
+        if self.type == IonChannelType.LEAK:
+            return self.g_max * (v - self.E_rev)
+            
+        # For voltage-gated channels, current depends on activation state
+        g = self.g_max * (self.m ** self.get_activation_power())
+        
+        # Add inactivation for Na+ and some Ca2+ channels
+        if self.type in [IonChannelType.NA, IonChannelType.CAT]:
+            g *= self.h
+            
+        return g * (v - self.E_rev)
+    
+    def get_activation_power(self) -> int:
+        """Get the power for activation variable based on channel type."""
+        if self.type == IonChannelType.NA:
+            return 3  # m³h kinetics for Na+ channels
+        elif self.type == IonChannelType.K:
+            return 4  # n⁴ kinetics for K+ channels
+        elif self.type in [IonChannelType.CAL, IonChannelType.CAT]:
+            return 2  # m² kinetics for Ca²+ channels
+        elif self.type == IonChannelType.KA:
+            return 4  # Similar to delayed rectifier K+
+        elif self.type == IonChannelType.KM:
+            return 1  # Linear activation for M-type K+
+        return 1  # Default linear activation
 
 class AdvancedNeuron:
     """Advanced neuron model with type-specific properties and detailed ion channels."""
@@ -136,6 +171,7 @@ class AdvancedNeuron:
         self.v = self.E_L  # Membrane potential
         self.spike = False
         self.last_spike_time = -1000.0
+        self.refractory_period = False
         
         # Ion channels - initialized based on neuron type
         self.channels = self._initialize_channels()
@@ -233,31 +269,53 @@ class AdvancedNeuron:
             
         return channels
 
-    def integrate(self, dt: float):
-        """Integrate all neuronal dynamics."""
+    def integrate(self, t: float, dt: float) -> None:
+        """
+        Integrate neural dynamics for one timestep.
+        
+        Args:
+            t: Current time (ms)
+            dt: Time step (ms)
+        """
+        # Check refractory period
+        if t - self.last_spike_time < self.t_ref:  # Changed from t_last_spike to last_spike_time
+            self.refractory_period = True
+            self.spike = False
+            return
+        else:
+            self.refractory_period = False
+        
         # Update ion channels
         I_total = 0
         for channel in self.channels.values():
-            channel.update(self.v, dt)
-            I_total += channel.current(self.v)
+            # Update channel state
+            alpha_m = channel.alpha_m(self.v)
+            beta_m = channel.beta_m(self.v)
+            channel.m += dt * (alpha_m * (1 - channel.m) - beta_m * channel.m)
+            
+            # Compute current
+            g = channel.g_max * channel.m
+            I_total += g * (self.v - channel.E_rev)
         
         # Calcium dynamics
-        cal_current = self.channels.get(IonChannelType.CAL, None)
-        if cal_current:
-            self.Ca += (
+        cal_channel = self.channels.get(IonChannelType.CAL)
+        if cal_channel:
+            self.Ca += dt * (
                 -self.Ca / self.tau_Ca +  # Decay
-                0.1 * cal_current.current(self.v)  # Calcium entry
-            ) * dt
+                0.1 * abs(cal_channel.current(self.v))  # Calcium entry
+            )
         
         # Adaptation current
-        self.w += (
+        self.w += dt * (
             self.a * (self.v - self.E_L) - self.w
-        ) / self.tau_w * dt
+        ) / self.tau_w
+        
+        # Synaptic and external currents
+        I_syn = self._synaptic_current()
         
         # Membrane potential update
         dv = (
-            -I_total - self.w +  # Intrinsic currents
-            self._synaptic_current()  # Synaptic input
+            -I_total - self.w + I_syn
         ) / self.C
         
         self.v += dv * dt
@@ -267,14 +325,16 @@ class AdvancedNeuron:
             self.spike = True
             self.v = self.V_reset
             self.w += self.b  # Spike-triggered adaptation
+            self.last_spike_time = t  # Changed from t_last_spike to last_spike_time
             self.spike_threshold += 2.0  # Threshold adaptation
         else:
             self.spike = False
-            self.spike_threshold += (self.V_th - self.spike_threshold) / 50.0 * dt
+            # Threshold recovery
+            self.spike_threshold += dt * (self.V_th - self.spike_threshold) / 50.0
         
         # Update metabolic state
         self._update_metabolism(dt, abs(I_total))
-
+    
     def _synaptic_current(self) -> float:
         """Calculate total synaptic current."""
         I_syn = 0.0

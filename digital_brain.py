@@ -58,8 +58,8 @@ def _process_connections_chunk(args):
         # Create connection with distance-dependent properties
         weight = 0.5 + 0.1 * np.exp(-distance / 100.0)
         delay = 1.0 + distance * 0.1  # Distance-dependent delay
-        connections.append((source_idx, target_idx, 
-                          AdvancedConnection(source_idx, target_idx, weight, delay)))
+        # Return just the connection object, not a tuple
+        connections.append(AdvancedConnection(source_idx, target_idx, weight, delay))
     
     return connections
 
@@ -233,8 +233,9 @@ class ModularDigitalBrain:
                 # Process connections in parallel
                 chunk_args = (chunk_source, target_layer.neurons, base_prob, distances)
                 for connections in pool.imap_unordered(_process_connections_chunk, [chunk_args]):
-                    for source_idx, target_idx, connection in connections:
-                        self.connections[(source_idx, target_idx)] = connection
+                    for connection in connections:
+                        # Store the connection object directly using source and target indices as key
+                        self.connections[(connection.source_idx, connection.target_idx)] = connection
     
     def _validate_brain(self):
         """Validate the brain structure and report statistics."""
