@@ -1,83 +1,81 @@
 # main.py
 import numpy as np
-from digital_brain import ModularDigitalBrain
+from visualization import RealtimeVisualizer
 from cortical_layers import CorticalLayer
 from checkpointing import ResumableSimulation
 import matplotlib.pyplot as plt
 from pathlib import Path
 import sys
 import argparse
-import time
+import subprocess
 from auditory import AudioProcessor, RealtimeAudioSimulation
+from sensory_input import MultimodalProcessor, MultimodalSimulation
 from brain_cache import get_or_create_brain
 
-def setup_visualization():
-    """Set up real-time matplotlib visualization."""
-    plt.ion()  # Enable interactive mode
-    fig = plt.figure(figsize=(15, 8))
-    
-    # Create subplots
-    ax1 = plt.subplot2grid((3, 2), (0, 0), colspan=2)  # Firing rate plot
-    ax2 = plt.subplot2grid((3, 2), (1, 0), colspan=2)  # Raster plot
-    ax3 = plt.subplot2grid((3, 2), (2, 0))  # Region activity
-    ax4 = plt.subplot2grid((3, 2), (2, 1))  # Network state
-    
-    ax1.set_title('Mean Firing Rate')
-    ax2.set_title('Spike Raster')
-    ax3.set_title('Region Activity')
-    ax4.set_title('Network State')
-    
-    plt.tight_layout()
-    return fig, (ax1, ax2, ax3, ax4)
+def verify_dependencies():
+    """Verify that all required dependencies are installed."""
+    try:
+        import cv2
+        import librosa
+        import soundfile
+    except ImportError as e:
+        print(f"Missing required dependency: {str(e)}")
+        print("Please install required packages using:")
+        print("pip install opencv-python librosa soundfile")
+        sys.exit(1)
+        
+    # Check for ffmpeg installation
+    try:
+        subprocess.run(['ffmpeg', '-version'], capture_output=True)
+    except FileNotFoundError:
+        print("ffmpeg is not installed. Please install ffmpeg:")
+        print("On Ubuntu/Debian: sudo apt-get install ffmpeg")
+        print("On macOS with Homebrew: brew install ffmpeg")
+        print("On Windows: Download from https://ffmpeg.org/download.html")
+        sys.exit(1)
 
-def update_plots(data, fig, axes, rate_history, time_history):
-    """Update visualization with new data."""
-    ax1, ax2, ax3, ax4 = axes
+def process_multimodal(video_file: str, scale_factor: float = 0.001, force_new_brain: bool = False):
+    """Process video file with synchronized audio and visual stimulation."""
+    print("\n=== Neural Response to Audio-Visual Processing ===\n")
     
-    # Update firing rate history
-    rate_history.append(data['stats']['mean_firing_rate'])
-    time_history.append(data['time'])
+    # Initialize components
+    print("1. Initializing brain and multimodal processor...")
+    brain = get_or_create_brain(scale_factor=scale_factor, force_new=force_new_brain)
+    multimodal_processor = MultimodalProcessor()
+    simulation = MultimodalSimulation(brain, multimodal_processor)
     
-    # Limit history length
-    max_history = 1000
-    if len(rate_history) > max_history:
-        rate_history.pop(0)
-        time_history.pop(0)
+    # Set up visualization
+    print("2. Setting up visualization...")
+    visualizer = RealtimeVisualizer()
+    visualizer.setup()
     
-    # Update firing rate plot
-    ax1.clear()
-    ax1.plot(time_history, rate_history)
-    ax1.set_title('Mean Firing Rate')
-    ax1.set_xlabel('Time (s)')
-    ax1.set_ylabel('Rate (Hz)')
+    def visualization_callback(data):
+        visualizer.update_data(data)
     
-    # Update raster plot (last 100ms of spikes)
-    ax2.clear()
-    if 'spike_record' in data:
-        recent_spikes = data['spike_record'][-100:]
-        spike_times, spike_neurons = np.where(recent_spikes)
-        ax2.scatter(spike_times, spike_neurons, s=1, c='black')
-    ax2.set_title('Spike Raster (last 100ms)')
+    simulation.register_callback(visualization_callback)
     
-    # Update region activity
-    ax3.clear()
-    regions = list(data['stats']['region_activity'].keys())
-    activities = [data['stats']['region_activity'][r] for r in regions]
-    ax3.bar(regions, activities)
-    ax3.set_title('Region Activity')
-    plt.setp(ax3.xaxis.get_majorticklabels(), rotation=45)
-    
-    # Update network state
-    ax4.clear()
-    ax4.text(0.5, 0.5, f"State: {data['stats']['network_state']}\n"
-             f"Sync Index: {data['stats']['synchrony_index']:.2f}\n"
-             f"Active Neurons: {data['stats']['active_neurons']}",
-             horizontalalignment='center',
-             verticalalignment='center')
-    ax4.axis('off')
-    
-    fig.canvas.draw()
-    fig.canvas.flush_events()
+    try:
+        print(f"3. Processing video file: {video_file}")
+        import threading
+        processing_thread = threading.Thread(
+            target=simulation.process_video_file,
+            args=(video_file,)
+        )
+        processing_thread.start()
+        
+        visualizer.start()
+        
+    except KeyboardInterrupt:
+        print("\nProcessing interrupted by user")
+        simulation.stop()
+    except Exception as e:
+        print(f"\nError during processing: {str(e)}")
+        simulation.stop()
+        raise
+    finally:
+        visualizer.stop()
+        if processing_thread.is_alive():
+            processing_thread.join(timeout=1.0)
 
 def process_audio(audio_file: str, scale_factor: float = 0.001, force_new_brain: bool = False):
     """Process audio file and visualize brain activity."""
@@ -91,25 +89,25 @@ def process_audio(audio_file: str, scale_factor: float = 0.001, force_new_brain:
     
     # Set up visualization
     print("2. Setting up visualization...")
-    fig, axes = setup_visualization()
-    rate_history = []
-    time_history = []
+    visualizer = RealtimeVisualizer()
+    visualizer.setup()
     
-    # Define visualization callback
     def visualization_callback(data):
-        update_plots(data, fig, axes, rate_history, time_history)
+        visualizer.update_data(data)
     
-    # Register callback
     simulation.register_callback(visualization_callback)
     
     try:
         print(f"3. Processing audio file: {audio_file}")
-        simulation.process_audio_file(audio_file)
+        import threading
+        processing_thread = threading.Thread(
+            target=simulation.process_audio_file,
+            args=(audio_file,)
+        )
+        processing_thread.start()
         
-        # Keep main thread alive while processing
-        while simulation.is_running:
-            time.sleep(0.1)
-            
+        visualizer.start()
+        
     except KeyboardInterrupt:
         print("\nProcessing interrupted by user")
         simulation.stop()
@@ -118,33 +116,24 @@ def process_audio(audio_file: str, scale_factor: float = 0.001, force_new_brain:
         simulation.stop()
         raise
     finally:
-        plt.ioff()
-        plt.close(fig)
+        visualizer.stop()
+        if processing_thread.is_alive():
+            processing_thread.join(timeout=1.0)
 
 def test_digital_brain(scale_factor=0.001, duration=1000.0, dt=0.1, resume_id=None, force_new_brain=False):
-    """
-    Comprehensive test of the digital brain implementation with checkpoint support.
-    
-    Args:
-        scale_factor: Brain size scaling factor (smaller = faster testing)
-        duration: Simulation duration in ms
-        dt: Integration time step in ms
-        resume_id: Optional ID to resume from previous checkpoint
-        force_new_brain: If True, force creation of new brain instead of using cache
-    """
+    """Comprehensive test of the digital brain implementation."""
     print("\n=== Digital Brain Test Suite ===\n")
     
     # Initialize brain with caching
     print("1. Initializing brain...")
     brain = get_or_create_brain(scale_factor=scale_factor, force_new=force_new_brain)
     
-    # Use ResumableSimulation instead of AdvancedSimulation
     print("2. Setting up simulation...")
     sim = ResumableSimulation(
         brain=brain,
         duration=duration,
         dt=dt,
-        checkpoint_frequency=1000  # Save checkpoint every 1000 timesteps
+        checkpoint_frequency=1000
     )
     
     # Basic structure tests
@@ -155,7 +144,6 @@ def test_digital_brain(scale_factor=0.001, duration=1000.0, dt=0.1, resume_id=No
     # Test region connectivity
     print("\n4. Testing region connectivity:")
     for region_name, region in brain.regions.items():
-        # Count outgoing connections
         outgoing = 0
         for (src, _) in brain.connections.keys():
             if any(layer_config.start_idx <= src < layer_config.end_idx 
@@ -171,20 +159,20 @@ def test_digital_brain(scale_factor=0.001, duration=1000.0, dt=0.1, resume_id=No
             neuron_count = config.end_idx - config.start_idx
             print(f"- {layer.name}: {neuron_count} neurons ({config.start_idx}-{config.end_idx})")
     
-    # Add stimulus to V1 layer 4
+    # Test stimulation
     try:
         v1_l4_neurons = brain.get_layer_neurons('v1', CorticalLayer.L4)
         if v1_l4_neurons:
             print(f"\n6. Stimulating {min(100, len(v1_l4_neurons))} neurons in V1 Layer 4")
-            stim_neurons = v1_l4_neurons[:100]  # Stimulate first 100 neurons
+            stim_neurons = v1_l4_neurons[:100]
             for neuron in stim_neurons:
-                neuron.receive_input(-1, 2.0, 0)  # External stimulus
+                neuron.receive_input(-1, 2.0, 0)
         else:
             print("\n6. Warning: No neurons found in V1 Layer 4")
     except Exception as e:
         print(f"\n6. Error stimulating V1 Layer 4: {str(e)}")
     
-    # Save simulation ID for potential resume
+    # Save simulation ID
     sim_id = None
     if sim.checkpoint_manager.last_checkpoint:
         sim_id = sim.checkpoint_manager._get_simulation_id(sim)
@@ -196,7 +184,6 @@ def test_digital_brain(scale_factor=0.001, duration=1000.0, dt=0.1, resume_id=No
         print("\n7. Running simulation...")
         sim.run(resume_id=resume_id)
         
-        # Analyze results
         print("\n8. Analyzing simulation results:")
         analyze_simulation_results(sim)
         
@@ -207,7 +194,6 @@ def test_digital_brain(scale_factor=0.001, duration=1000.0, dt=0.1, resume_id=No
         if sim_id:
             print(f"Can resume using simulation ID: {sim_id}")
         return None
-        
     except Exception as e:
         print(f"\nError during simulation: {str(e)}")
         if sim_id:
@@ -220,7 +206,6 @@ def analyze_simulation_results(sim):
     active_neurons = np.where(np.sum(sim.spike_record, axis=0) > 0)[0]
     
     if len(active_neurons) > 0:
-        # Spike raster plot
         plt.figure(figsize=(12, 6))
         spike_times = np.where(sim.spike_record[:, active_neurons])[0]
         spike_neurons = np.where(sim.spike_record[:, active_neurons])[1]
@@ -233,7 +218,7 @@ def analyze_simulation_results(sim):
         print("- Warning: No active neurons detected")
     
     # Firing rate analysis
-    firing_rates = np.sum(sim.spike_record, axis=0) / (sim.duration/1000.0)  # Hz
+    firing_rates = np.sum(sim.spike_record, axis=0) / (sim.duration/1000.0)
     mean_rate = np.mean(firing_rates)
     print(f"- Mean firing rate: {mean_rate:.2f} Hz")
     
@@ -273,25 +258,38 @@ def analyze_simulation_results(sim):
     print(f"- Max weight: {np.max(weights):.3f}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Digital Brain Audio Processing')
-    parser.add_argument('--mode', choices=['test', 'audio'], default='test',
-                        help='Operation mode: test or audio processing')
-    parser.add_argument('--audio-file', type=str, help='Path to audio file for processing')
+    parser = argparse.ArgumentParser(description='Digital Brain Simulation and Processing')
+    parser.add_argument('--mode', choices=['test', 'audio', 'video', 'multimodal'], 
+                      default='test',
+                      help='Operation mode: test, audio, video, or multimodal processing')
+    parser.add_argument('--input-file', type=str, 
+                      help='Path to input file (audio or video)')
     parser.add_argument('--scale', type=float, default=0.001,
-                        help='Brain scale factor (smaller = faster processing)')
-    parser.add_argument('--resume-id', type=str, help='Resume from checkpoint ID')
+                      help='Brain scale factor (smaller = faster processing)')
+    parser.add_argument('--resume-id', type=str, 
+                      help='Resume from checkpoint ID')
     parser.add_argument('--force-new-brain', action='store_true',
-                        help='Force creation of new brain instead of using cache')
+                      help='Force creation of new brain instead of using cache')
+    
     args = parser.parse_args()
     
     try:
-        if args.mode == 'audio':
-            if not args.audio_file:
-                print("Error: --audio-file required for audio processing mode")
+        if args.mode in ['video', 'multimodal']:
+            verify_dependencies()
+        
+        if args.mode in ['multimodal', 'video']:
+            if not args.input_file:
+                print("Error: --input-file required for video/multimodal processing")
                 sys.exit(1)
-            process_audio(args.audio_file, args.scale, args.force_new_brain)
+            process_multimodal(args.input_file, args.scale, args.force_new_brain)
+            
+        elif args.mode == 'audio':
+            if not args.input_file:
+                print("Error: --input-file required for audio processing")
+                sys.exit(1)
+            process_audio(args.input_file, args.scale, args.force_new_brain)
+            
         else:
-            # Original test functionality
             simulation = test_digital_brain(
                 scale_factor=args.scale,
                 duration=1000.0,
@@ -305,3 +303,4 @@ if __name__ == "__main__":
         sys.exit(1)
     except Exception as e:
         print(f"\nError during processing: {str(e)}")
+        raise

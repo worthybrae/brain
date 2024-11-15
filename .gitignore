@@ -12,6 +12,12 @@ logs/*
 # Audio Files
 *.mp3
 
+# Video Files
+*.mp4
+
+# Cached Data
+*.pkl
+
 # Checkpoints
 checkpoints/*
 

@@ -130,6 +130,9 @@ class ModularDigitalBrain:
         """Initialize brain regions with cortical layers."""
         print("Initializing brain regions...")
         regions = {
+            'a1': EnhancedBrainRegion('a1', int(1_000_000 * self.scale_factor), (50, -20, 0), 15),  # Primary auditory cortex
+            'a2': EnhancedBrainRegion('a2', int(500_000 * self.scale_factor), (55, -15, 0), 12),    # Secondary auditory cortex
+            'mgb': EnhancedBrainRegion('mgb', int(200_000 * self.scale_factor), (45, -25, -5), 8),  # Medial geniculate body
             'v1': EnhancedBrainRegion('v1', int(2_000_000 * self.scale_factor), (0, -80, 0), 20),
             'v2': EnhancedBrainRegion('v2', int(1_000_000 * self.scale_factor), (0, -70, 0), 15),
             'v4': EnhancedBrainRegion('v4', int(1_000_000 * self.scale_factor), (30, -60, -5), 12),
@@ -194,16 +197,65 @@ class ModularDigitalBrain:
                     self.neurons.extend(layer_config.neurons)
     
     def _initialize_connections(self):
-        """Initialize connections in parallel based on layer-specific connectivity rules."""
+        """Initialize connections with added randomness and lateral connectivity."""
         print("Initializing connections...")
         num_cpus = os.cpu_count() or 1
         chunk_size = min(5000, self.total_neurons // num_cpus)
         
         with mp.Pool(processes=num_cpus) as pool:
             for region in tqdm(self.regions.values(), desc="Connecting regions"):
+                # Add random lateral connections within layers
                 for source_layer in region.layer_configs.values():
                     for target_layer in region.layer_configs.values():
+                        # Original hierarchical connections
                         self._connect_layers_parallel(source_layer, target_layer, chunk_size)
+                        
+                        # Add random lateral connections within each layer
+                        if source_layer == target_layer:
+                            neurons = len(source_layer.neurons)
+                            connection_prob = 0.1  # 10% connection probability
+                            
+                            # Generate random connections
+                            for i in range(0, neurons):
+                                # Random subset of target neurons
+                                targets = np.random.choice(
+                                    neurons,
+                                    size=int(neurons * connection_prob),
+                                    replace=False
+                                )
+                                
+                                for j in targets:
+                                    if i != j:  # Avoid self-connections
+                                        weight = np.random.normal(0.5, 0.1)  # Random weights
+                                        delay = np.random.uniform(0.5, 2.0)  # Random delays
+                                        source_idx = source_layer.start_idx + i
+                                        target_idx = target_layer.start_idx + j
+                                        
+                                        conn = AdvancedConnection(
+                                            source_idx, target_idx, weight, delay
+                                        )
+                                        self.connections[(source_idx, target_idx)] = conn
+                        
+                        # Add some cross-layer random connections
+                        elif np.random.random() < 0.2:  # 20% chance of cross-layer connections
+                            source_neurons = len(source_layer.neurons)
+                            target_neurons = len(target_layer.neurons)
+                            
+                            # Create sparse random connections
+                            num_connections = int(min(source_neurons, target_neurons) * 0.05)
+                            source_indices = np.random.choice(source_neurons, num_connections)
+                            target_indices = np.random.choice(target_neurons, num_connections)
+                            
+                            for s, t in zip(source_indices, target_indices):
+                                source_idx = source_layer.start_idx + s
+                                target_idx = target_layer.start_idx + t
+                                weight = np.random.normal(0.3, 0.1)
+                                delay = np.random.uniform(0.5, 2.0)
+                                
+                                conn = AdvancedConnection(
+                                    source_idx, target_idx, weight, delay
+                                )
+                                self.connections[(source_idx, target_idx)] = conn
     
     def _connect_layers_parallel(self, source_layer: RegionLayerConfig, 
                                target_layer: RegionLayerConfig, chunk_size: int):

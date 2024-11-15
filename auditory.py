@@ -27,6 +27,156 @@ class AudioProcessor:
         self.feature_queue = queue.Queue()
         self.is_processing = False
         
+        # Stimulation parameters
+        self.audio_scale = 5.0      # Base stimulation strength for audio
+        self.visual_scale = 3.0     # Base stimulation strength for visual (future use)
+        self.onset_scale = 3.0      # Scale factor for onset detection
+        self.spectral_scale = 2.0   # Scale factor for spectral features
+        self.dt = 0.1                # Default timestep in ms
+        
+    def _safe_normalize(self, weights):
+        """Safely normalize weights array, handling edge cases."""
+        if len(weights) == 0:
+            return np.array([])
+        if len(weights) == 1:
+            return np.array([1.0])
+        if np.all(weights == weights[0]):
+            return np.ones_like(weights)
+        
+        min_val = np.min(weights)
+        max_val = np.max(weights)
+        if max_val == min_val:
+            return np.ones_like(weights)
+        return (weights - min_val) / (max_val - min_val)
+    
+    def _ensure_scalar(self, value):
+        """Convert arrays or lists to scalar values safely."""
+        if isinstance(value, (np.ndarray, list)):
+            if len(value) > 0:
+                return float(np.mean(value))
+            return 0.0
+        return float(value)
+        
+    def create_stim_pattern(self, neurons, base_signal, noise_level=0.2, baseline=0.1):
+        """Create stimulation pattern with temporal and spatial variability."""
+        if not neurons or len(neurons) == 0:
+            return np.array([])
+            
+        # Ensure base_signal is a scalar
+        base_signal = self._ensure_scalar(base_signal)
+            
+        n_neurons = len(neurons)
+        temporal_noise = np.random.normal(0, noise_level, n_neurons)
+        spatial_weights = np.random.lognormal(0, 0.5, n_neurons)
+        
+        # Safely normalize spatial weights
+        spatial_weights = self._safe_normalize(spatial_weights)
+        
+        return baseline + (base_signal + temporal_noise) * spatial_weights
+        
+    def map_features_to_stimulation(self, features: AudioFeatures, brain, timestep: int) -> Dict[str, np.ndarray]:
+        """Map audio features to appropriate neural regions based on processing mode."""
+        stimulation_patterns = {}
+        
+        # Get current onset value for all regions
+        onset_idx = min(timestep, len(features.onset_strength) - 1)
+        onset_value = float(features.onset_strength[onset_idx])
+        
+        # 1. Primary Auditory Cortex (A1) - Processes basic sound features
+        a1_l4_neurons = brain.get_layer_neurons('a1', CorticalLayer.L4)
+        if a1_l4_neurons and len(a1_l4_neurons) > 0:
+            # Map frequency information (spectral centroid and MFCC)
+            spec_idx = min(timestep, len(features.spectral_centroid) - 1)
+            spec_value = float(features.spectral_centroid[spec_idx])
+            
+            # Combine spectral and onset information
+            base_signal = (spec_value * self.spectral_scale + 
+                         onset_value * self.onset_scale) * self.audio_scale
+            
+            a1_stim = self.create_stim_pattern(a1_l4_neurons, base_signal, noise_level=0.15)
+            if len(a1_stim) > 0:
+                stimulation_patterns['a1_l4'] = a1_stim
+        
+        # 2. Secondary Auditory Cortex (A2) - Processes more complex sound features
+        a2_l4_neurons = brain.get_layer_neurons('a2', CorticalLayer.L4)
+        if a2_l4_neurons and len(a2_l4_neurons) > 0:
+            # Map temporal features (rhythm, tempo)
+            tempo_factor = np.sin(2 * np.pi * features.tempo * timestep * self.dt / 1000)
+            
+            # Combine with onset strength for rhythm processing
+            base_signal = (0.5 + 0.5 * tempo_factor + 
+                         0.3 * onset_value) * self.audio_scale
+            
+            a2_stim = self.create_stim_pattern(a2_l4_neurons, base_signal, noise_level=0.2)
+            if len(a2_stim) > 0:
+                stimulation_patterns['a2_l4'] = a2_stim
+        
+        # 3. Auditory Association Cortex (AA) - Processes complex patterns
+        aa_l4_neurons = brain.get_layer_neurons('aa', CorticalLayer.L4)
+        if aa_l4_neurons and len(aa_l4_neurons) > 0:
+            # Process MFCC for timbre and phonetic content
+            mfcc_idx = min(timestep, features.mfcc.shape[1] - 1)
+            current_mfcc = features.mfcc[:, mfcc_idx]
+            
+            # Calculate MFCC change
+            if timestep > 0:
+                prev_mfcc = features.mfcc[:, max(0, mfcc_idx - 1)]
+                mfcc_delta = np.mean(np.abs(current_mfcc - prev_mfcc))
+            else:
+                mfcc_delta = 0
+                
+            base_signal = (np.mean(current_mfcc) + 0.5 * mfcc_delta) * self.audio_scale
+            
+            aa_stim = self.create_stim_pattern(aa_l4_neurons, base_signal, noise_level=0.25)
+            if len(aa_stim) > 0:
+                stimulation_patterns['aa_l4'] = aa_stim
+        
+        # 4. Inferior Colliculus (IC) - Subcortical auditory processing
+        ic_neurons = brain.get_layer_neurons('ic', CorticalLayer.L4)
+        if ic_neurons and len(ic_neurons) > 0:
+            # Process pitch information from chromagram
+            if timestep < features.chromagram.shape[1]:
+                chroma_current = features.chromagram[:, timestep]
+                pitch_strength = np.max(chroma_current)
+                pitch_complexity = -np.sum(chroma_current * np.log(chroma_current + 1e-10))
+                
+                base_signal = (pitch_strength + 0.3 * pitch_complexity) * self.audio_scale
+                
+                ic_stim = self.create_stim_pattern(ic_neurons, base_signal, noise_level=0.15)
+                if len(ic_stim) > 0:
+                    stimulation_patterns['ic_l4'] = ic_stim
+        
+        # 5. Superior Temporal Gyrus (STG) - High-level auditory processing
+        stg_l4_neurons = brain.get_layer_neurons('stg', CorticalLayer.L4)
+        if stg_l4_neurons and len(stg_l4_neurons) > 0:
+            # Integrate multiple features for high-level processing
+            if timestep < features.chromagram.shape[1]:
+                # Combine rhythm, pitch, and spectral features
+                high_level_features = [
+                    float(onset_value),
+                    float(0.5 + 0.5 * np.sin(2 * np.pi * features.tempo * timestep * self.dt / 1000)),
+                    float(np.mean(features.chromagram[:, timestep])),
+                    float(features.spectral_centroid[min(timestep, len(features.spectral_centroid) - 1)])
+                ]
+                
+                base_signal = np.mean(high_level_features) * self.audio_scale
+                
+                stg_stim = self.create_stim_pattern(stg_l4_neurons, base_signal, noise_level=0.2)
+                if len(stg_stim) > 0:
+                    stimulation_patterns['stg_l4'] = stg_stim
+        
+        # 6. Prefrontal Cortex (PFC) - Only stimulate for significant events
+        pfc_l4_neurons = brain.get_layer_neurons('pfc', CorticalLayer.L4)
+        if pfc_l4_neurons and len(pfc_l4_neurons) > 0:
+            # Detect significant audio events
+            if onset_value > 0.8 or np.mean(features.spectral_centroid) > 0.9:
+                base_signal = 0.5 * self.audio_scale
+                pfc_stim = self.create_stim_pattern(pfc_l4_neurons, base_signal, noise_level=0.1)
+                if len(pfc_stim) > 0:
+                    stimulation_patterns['pfc_l4'] = pfc_stim
+        
+        return stimulation_patterns
+        
     def load_audio(self, file_path: str) -> Tuple[np.ndarray, float]:
         """Load and preprocess audio file."""
         # Load audio file
@@ -58,40 +208,6 @@ class AudioProcessor:
             onset_strength=onset_env,
             chromagram=chromagram
         )
-    
-    def map_features_to_stimulation(self, features: AudioFeatures, brain, timestep: int) -> Dict[str, np.ndarray]:
-        """Map audio features to neural stimulation patterns."""
-        stimulation_patterns = {}
-        
-        # Map different features to different brain regions and layers
-        
-        # V1 (Primary Visual Cortex) - Map tempo and onset information
-        v1_l4_neurons = brain.get_layer_neurons('v1', CorticalLayer.L4)
-        if v1_l4_neurons:
-            # Create stimulation pattern based on onset strength
-            v1_stim = np.zeros(len(v1_l4_neurons))
-            onset_idx = min(timestep, len(features.onset_strength) - 1)
-            v1_stim[:] = features.onset_strength[onset_idx] * 2.0  # Scale factor
-            stimulation_patterns['v1_l4'] = v1_stim
-            
-        # V2 - Map spectral centroid
-        v2_l4_neurons = brain.get_layer_neurons('v2', CorticalLayer.L4)
-        if v2_l4_neurons:
-            v2_stim = np.zeros(len(v2_l4_neurons))
-            spec_idx = min(timestep, len(features.spectral_centroid) - 1)
-            v2_stim[:] = features.spectral_centroid[spec_idx] / 1000.0  # Normalize
-            stimulation_patterns['v2_l4'] = v2_stim
-            
-        # IT (Inferior Temporal) - Map MFCC features
-        it_l4_neurons = brain.get_layer_neurons('it', CorticalLayer.L4)
-        if it_l4_neurons:
-            it_stim = np.zeros(len(it_l4_neurons))
-            mfcc_idx = min(timestep, features.mfcc.shape[1] - 1)
-            it_stim[:] = np.repeat(features.mfcc[:, mfcc_idx], 
-                                 len(it_l4_neurons) // 13 + 1)[:len(it_l4_neurons)]
-            stimulation_patterns['it_l4'] = it_stim
-            
-        return stimulation_patterns
 
 class RealtimeAudioSimulation:
     """Manages real-time audio processing and brain simulation."""
@@ -100,9 +216,186 @@ class RealtimeAudioSimulation:
         self.brain = brain
         self.audio_processor = audio_processor
         self.simulation = ResumableSimulation(brain, duration=1000.0, dt=0.1)
+        
+        # Increase neural excitability even more aggressively
+        for neuron in brain.neurons:
+            # Make neurons much more responsive
+            neuron.V_th -= 10.0    # Lower spike threshold more significantly
+            neuron.g_L *= 1.5      # Increase membrane conductance further
+            neuron.b *= 0.5        # Reduce adaptation more significantly
+            neuron.t_ref = 1.0     # Reduce refractory period
+            
+            # Adjust synaptic weights to increase network connectivity
+            for syn in neuron.synapses.values():
+                syn.weight *= 2.0   # Double synaptic weights
+        
+        # Add spike history buffer
+        self.spike_buffer_size = 1000  # 100ms at 0.1ms timestep
+        self.spike_buffer = np.zeros((self.spike_buffer_size, len(brain.neurons)), dtype=bool)
+        self.buffer_index = 0
+        
         self.is_running = False
         self.current_time = 0
         self.callbacks = []
+        
+    def _run_simulation(self, features: AudioFeatures, duration: float):
+        """Run simulation with audio-driven neural stimulation."""
+        timestep = 0
+        start_time = time.time()
+        
+        while self.is_running and self.current_time < duration:
+            # Map audio features to neural stimulation
+            stimulation = self.audio_processor.map_features_to_stimulation(
+                features, self.brain, timestep
+            )
+            
+            # Track spikes this timestep
+            current_spikes = np.zeros(len(self.brain.neurons), dtype=bool)
+            
+            # Apply stimulation to neurons with increased strength
+            for region_name, stim_pattern in stimulation.items():
+                if region_name.endswith('_l4'):
+                    region_name = region_name[:-3]
+                    neurons = self.brain.get_layer_neurons(region_name, CorticalLayer.L4)
+                    if neurons:
+                        for i, neuron in enumerate(neurons):
+                            # Increase stimulation strength significantly
+                            stim_value = stim_pattern[i] * 5.0 + 0.5  # More aggressive scaling
+                            neuron.receive_input(-1, stim_value, self.current_time)
+                            
+                            # Record spike if it occurred
+                            if neuron.spike:
+                                current_spikes[neuron.idx] = True
+            
+            # Update spike buffer
+            self.spike_buffer[self.buffer_index] = current_spikes
+            self.buffer_index = (self.buffer_index + 1) % self.spike_buffer_size
+            
+            # Run simulation timestep
+            self.simulation._update_timestep(timestep)
+            
+            # Calculate network statistics
+            stats = self._calculate_statistics(timestep, current_spikes)
+            
+            # Notify callbacks with new data
+            self.notify_callbacks({
+                'time': self.current_time,
+                'stats': stats,
+                'spike_record': self.get_recent_spikes(),
+                'stimulation': stimulation
+            })
+            
+            # Update timing
+            timestep += 1
+            self.current_time = time.time() - start_time
+            
+            # Maintain real-time simulation
+            expected_time = timestep * self.simulation.dt / 1000.0
+            if self.current_time < expected_time:
+                time.sleep(expected_time - self.current_time)
+    
+    def get_recent_spikes(self) -> np.ndarray:
+        """Get the most recent spike data from the circular buffer."""
+        # Reconstruct proper time ordering from circular buffer
+        ordered_spikes = np.zeros_like(self.spike_buffer)
+        ordered_spikes[:self.spike_buffer_size - self.buffer_index] = \
+            self.spike_buffer[self.buffer_index:]
+        ordered_spikes[self.spike_buffer_size - self.buffer_index:] = \
+            self.spike_buffer[:self.buffer_index]
+        return ordered_spikes
+    
+    def _calculate_statistics(self, timestep: int, current_spikes: np.ndarray) -> Dict:
+        """Calculate relevant network statistics using both buffer and simulation history."""
+        # Calculate instantaneous firing rate
+        instant_rate = np.mean(current_spikes) * 1000 / self.simulation.dt
+        
+        # Calculate short-term firing rate from recent buffer history
+        recent_window = 1000  # 100ms at 0.1ms timestep
+        start_idx = max(0, self.buffer_index - recent_window)
+        if start_idx < self.buffer_index:
+            recent_spikes = self.spike_buffer[start_idx:self.buffer_index]
+        else:
+            # Handle buffer wraparound
+            recent_spikes = np.concatenate([
+                self.spike_buffer[start_idx:],
+                self.spike_buffer[:self.buffer_index]
+            ])
+        short_term_rate = np.mean(recent_spikes) * 1000 / (recent_window * self.simulation.dt)
+        
+        # Calculate longer-term firing rate from simulation history if available
+        if hasattr(self.simulation, 'spike_record') and timestep > 0:
+            history_window = min(10000, timestep)  # Use up to last 1 second
+            long_term_rate = np.mean(self.simulation.spike_record[max(0, timestep - history_window):timestep]) * \
+                            1000 / (history_window * self.simulation.dt)
+        else:
+            long_term_rate = short_term_rate
+        
+        # Calculate region activity using both membrane potential and recent spikes
+        region_activity = {}
+        region_details = {}
+        for region_name, region in self.brain.regions.items():
+            region_neurons = []
+            region_indices = []
+            for layer_config in region.layer_configs.values():
+                if layer_config.neurons:
+                    region_neurons.extend(layer_config.neurons)
+                    region_indices.extend(range(layer_config.start_idx, layer_config.end_idx))
+            
+            if region_neurons:
+                # Combine membrane potential and spike rate
+                v_mean = np.mean([n.v for n in region_neurons])
+                spike_rate = np.mean(current_spikes[region_indices]) * 1000 / self.simulation.dt
+                region_details[region_name] = {
+                    'voltage': v_mean,
+                    'spike_rate': spike_rate,
+                    'combined_activity': (v_mean + 70) / 100 + spike_rate
+                }
+                region_activity[region_name] = region_details[region_name]['combined_activity']
+        
+        # Calculate synchrony over different timescales
+        instant_sync = np.sum(current_spikes) / len(self.brain.neurons)
+        
+        if len(recent_spikes) > 0:
+            try:
+                active_mask = np.any(recent_spikes, axis=0)
+                if np.sum(active_mask) > 1:
+                    active_spikes = recent_spikes[:, active_mask]
+                    sync_index = np.corrcoef(active_spikes.T)
+                    upper_triangle = sync_index[np.triu_indices_from(sync_index, k=1)]
+                    sync_index = np.nanmean(np.abs(upper_triangle))
+                else:
+                    sync_index = 0.0
+            except (ValueError, RuntimeWarning):
+                sync_index = 0.0
+        else:
+            sync_index = 0.0
+            
+        if not np.isfinite(sync_index):
+            sync_index = 0.0
+        
+        # Determine network state based on activity patterns
+        if instant_rate > 50:
+            network_state = "burst"
+        elif sync_index > 0.3:
+            network_state = "synchronized"
+        elif short_term_rate > 5:
+            network_state = "active"
+        else:
+            network_state = "resting"
+        
+        return {
+            'timestep': timestep,
+            'mean_firing_rate': short_term_rate,
+            'instant_rate': instant_rate,
+            'long_term_rate': long_term_rate,
+            'network_state': network_state,
+            'synchrony_index': sync_index,
+            'instant_sync': instant_sync,
+            'active_neurons': np.sum(current_spikes),
+            'active_fraction': np.mean(current_spikes),
+            'region_activity': region_activity,
+            'region_details': region_details
+        }
         
     def register_callback(self, callback):
         """Register callback for real-time updates."""
@@ -126,63 +419,9 @@ class RealtimeAudioSimulation:
             args=(features, duration)
         )
         simulation_thread.start()
-        
-    def _run_simulation(self, features: AudioFeatures, duration: float):
-        """Run simulation with audio-driven neural stimulation."""
-        timestep = 0
-        start_time = time.time()
-        
-        while self.is_running and self.current_time < duration:
-            # Map audio features to neural stimulation
-            stimulation = self.audio_processor.map_features_to_stimulation(
-                features, self.brain, timestep
-            )
-            
-            # Apply stimulation to neurons
-            for region_name, stim_pattern in stimulation.items():
-                if region_name == 'v1_l4':
-                    neurons = self.brain.get_layer_neurons('v1', CorticalLayer.L4)
-                    for i, neuron in enumerate(neurons):
-                        neuron.receive_input(-1, stim_pattern[i], self.current_time)
-            
-            # Run one simulation timestep
-            self.simulation._update_timestep(timestep)
-            
-            # Calculate network statistics
-            stats = self._calculate_statistics(timestep)
-            
-            # Notify callbacks with new data
-            self.notify_callbacks({
-                'time': self.current_time,
-                'stats': stats,
-                'stimulation': stimulation
-            })
-            
-            # Update timing
-            timestep += 1
-            self.current_time = time.time() - start_time
-            
-            # Maintain real-time simulation
-            expected_time = timestep * self.simulation.dt / 1000.0
-            if self.current_time < expected_time:
-                time.sleep(expected_time - self.current_time)
-                
-    def _calculate_statistics(self, timestep: int) -> Dict:
-        """Calculate relevant network statistics."""
-        return {
-            'mean_firing_rate': np.mean(self.simulation.firing_rates),
-            'synchrony_index': self.simulation.synchrony_index,
-            'network_state': self.simulation.state.value,
-            'active_neurons': np.sum(self.simulation.spike_record[timestep] > 0),
-            'region_activity': {
-                region_name: np.mean([
-                    n.v for layer_config in region.layer_configs.values()
-                    for n in layer_config.neurons
-                ]) if any(layer_config.neurons for layer_config in region.layer_configs.values()) else 0.0
-                for region_name, region in self.brain.regions.items()
-            }
-        }
-        
+    
     def stop(self):
         """Stop the simulation."""
         self.is_running = False
+            
+    
