@@ -102,14 +102,21 @@ class IonChannel:
     m: float = 0.0  # Activation variable
     h: float = 1.0  # Inactivation variable
     
+    def _safe_exp_divide(self, x: float, y: float) -> float:
+        """Safely compute x/(1-exp(-y)) avoiding numerical instabilities."""
+        if abs(y) < 1e-7:
+            # Use Taylor series approximation when y is very close to 0
+            return x * (1.0 + y/2.0 + y*y/12.0)
+        return x / (1.0 - np.exp(-y))
+
     def alpha_m(self, v: float) -> float:
-        """Calculate activation rate constant."""
+        """Calculate activation rate constant with numerical stability."""
         if self.type == IonChannelType.NA:
-            return 0.1 * (v + 40) / (1 - np.exp(-(v + 40) / 10))
+            return self._safe_exp_divide(0.1 * (v + 40), (v + 40) / 10)
         elif self.type == IonChannelType.K:
-            return 0.01 * (v + 55) / (1 - np.exp(-(v + 55) / 10))
+            return self._safe_exp_divide(0.01 * (v + 55), (v + 55) / 10)
         elif self.type == IonChannelType.CAL:
-            return 0.055 * (v + 27) / (1 - np.exp(-(v + 27) / 3.8))
+            return self._safe_exp_divide(0.055 * (v + 27), (v + 27) / 3.8)
         return 0.0
     
     def beta_m(self, v: float) -> float:

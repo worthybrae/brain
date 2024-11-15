@@ -96,8 +96,14 @@ class AdvancedSimulation:
         if len(recent_activity) < 100:
             return
             
-        # Compute power spectrum
-        freqs, psd = signal.welch(recent_activity.mean(axis=1), fs=1000/self.dt)
+        # Calculate appropriate window size (must be <= length of data)
+        nperseg = min(256, len(recent_activity) - 1)
+        
+        # Compute power spectrum with adjusted window size
+        freqs, psd = signal.welch(recent_activity.mean(axis=1), 
+                                fs=1000/self.dt,
+                                nperseg=nperseg,
+                                scaling='spectrum')
         
         # Detect dominant oscillations
         peaks, properties = signal.find_peaks(psd, height=np.mean(psd)*2)
@@ -110,6 +116,16 @@ class AdvancedSimulation:
                 phase=np.angle(signal.hilbert(recent_activity.mean(axis=1)))[0],
                 source_region='unknown'
             ))
+            
+        # Determine network state based on oscillations
+        if len(self.oscillations) == 0:
+            self.state = NetworkState.RESTING
+        elif any(0.5 <= osc.frequency <= 4 for osc in self.oscillations):
+            self.state = NetworkState.SLOW_WAVE
+        elif any(4 <= osc.frequency <= 8 for osc in self.oscillations):
+            self.state = NetworkState.BURST
+        elif any(30 <= osc.frequency <= 80 for osc in self.oscillations):
+            self.state = NetworkState.ACTIVE
             
         # Determine network state based on oscillations
         if len(self.oscillations) == 0:
