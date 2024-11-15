@@ -17,7 +17,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Running
+### Running
 
 ```
 # Use cached brain (or create if not exists)
@@ -27,8 +27,19 @@ python main.py --mode test --scale 0.001
 python main.py --mode test --scale 0.001 --force-new-brain
 
 # Audio processing with cached brain
-python main.py --mode audio --audio-file sample.wav --scale 0.001
+python main.py --mode audio --input-file "speech.mp3" --scale 0.001
 
 # Audio processing with new brain
-python main.py --mode audio --audio-file sample.wav --scale 0.001 --force-new-brain
+python main.py --mode audio --input-file "speech.mp3" --scale 0.001 --force-new-brain
+
+# Video processing with cached brain
+python main.py --mode multimodal --input-file "speech.mp4" --scale 0.001
+
+# Video processing with new brain
+python main.py --mode multimodal --input-file "speech.mp4" --scale 0.001 --force-new-brain
 ```
+
+### Live Monitoring
+
+During audio and multimodal processing there is live monitoring functionality like so:
+![monitor-dashboard](assets/monitor.png)
